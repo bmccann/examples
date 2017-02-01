@@ -7,8 +7,6 @@ from torch.autograd import Variable
 import math
 import time
 
-torch.backends.cudnn.enabled = False
-
 parser = argparse.ArgumentParser(description='train.py')
 
 ## Data options
