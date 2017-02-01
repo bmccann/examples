@@ -25,7 +25,7 @@ parser.add_argument('-train_from',
 
 ## Model options
 
-parser.add_argument('-layers', type=int, default=4,
+parser.add_argument('-layers', type=int, default=1,
                     help='Number of layers in the LSTM encoder/decoder')
 parser.add_argument('-rnn_size', type=int, default=500,
                     help='Size of LSTM hidden states')
@@ -45,9 +45,9 @@ parser.add_argument('-brnn_merge', default='concat',
 
 ## Optimization options
 
-parser.add_argument('-batch_size', type=int, default=256,
+parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
-parser.add_argument('-max_generator_batches', type=int, default=4,
+parser.add_argument('-max_generator_batches', type=int, default=32,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
                     more memory.""")
@@ -145,7 +145,7 @@ def eval(model, criterion, data):
     for i in range(len(data)):
         batch = [x.transpose(0, 1) for x in data[i]] # must be batch first for gather/scatter in DataParallel
         outputs = model(batch)  # FIXME volatile
-        targets = batch[1][:, 1:].transpose(0, 1).contiguous()  # exclude <s> from targets
+        targets = batch[1][:, 1:]  # exclude <s> from targets
         loss, _ = memoryEfficientLoss(
                 outputs, targets, model.generator, criterion, eval=True)
         total_loss += loss
@@ -164,6 +164,7 @@ def trainModel(model, trainData, validData, dataset, optim):
     # define criterion of each GPU
     criterion = NMTCriterion(dataset['dicts']['tgt'].size())
 
+    start_time = time.time()
     def trainEpoch(epoch):
 
         # shuffle mini batch order
@@ -195,21 +196,19 @@ def trainModel(model, trainData, validData, dataset, optim):
             total_words += num_words
             report_words += num_words
             if i % opt.log_interval == 0 and i > 0:
-                print("Epoch %2d, %5d/%5d batches; perplexity: %6.2f; %3.0f tokens/s; %10.0f total time" %
+                print("Epoch %2d, %5d/%5d batches; perplexity: %6.2f; %3.0f tokens/s; %6.0f s elapsed" %
                       (epoch, i, len(trainData),
                       math.exp(report_loss / report_words),
-                      report_words/(time.time()-start)),
-                      time.time()-start)
+                      report_words/(time.time()-start),
+                      time.time()-start_time))
 
                 report_loss = report_words = 0
                 start = time.time()
 
         return total_loss / total_words
 
-    start_time = time.time()
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
-        print(time.time() - start_time)
 
         #  (1) train for one epoch on the training set
         train_loss = trainEpoch(epoch)
@@ -262,13 +261,14 @@ def main():
         generator = nn.Sequential(
             nn.Linear(opt.rnn_size, dicts['tgt'].size()),
             nn.LogSoftmax())
+        generator = nn.DataParallel(generator, device_ids=opt.gpu)
         model = onmt.Models.NMTModel(encoder, decoder, generator)
+        model = nn.DataParallel(model, device_ids=opt.gpu)
         if opt.cuda:
             model.cuda()
         else:
             model.cpu()
-        # generator = nn.DataParallel(generator, device_ids=opt.gpu)
-        model = nn.DataParallel(model, device_ids=opt.gpu)
+
         model.generator = generator
 
         optim = onmt.Optim(
